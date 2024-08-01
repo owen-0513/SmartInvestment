@@ -1,0 +1,8 @@
+Flask
+pandas
+yfinance
+textblob
+tensorflow
+keras
+sklearn
+numpy
