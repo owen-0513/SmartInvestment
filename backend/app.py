@@ -12,11 +12,12 @@ import requests
 import time
 from snownlp import SnowNLP
 from textblob import TextBlob
+import os
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": "*"}})  # 允許所有來源
 
-NEWSAPI_KEY = "0160867f82e74d9daaa9b820e2052860"
+NEWSAPI_KEY = os.environ.get("NEWSAPI_KEY")
 
 
 # 格式化加密貨幣對的符號
