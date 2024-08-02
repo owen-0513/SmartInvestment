@@ -50,37 +50,64 @@ def add_technical_indicators(data):
     return data
 
 
+def convert_taiwan_date(date_str):
+    # 將民國年份轉換為西元年份
+    parts = date_str.split("/")
+    if len(parts[0]) == 3:  # 如果是民國年份，加上 1911
+        parts[0] = str(int(parts[0]) + 1911)  # 加上 1911，轉換為西元年份
+    return "/".join(parts)
+
+
+# 使用台灣證券交易所 API 獲取台股資料
+def get_taiwan_stock_data(symbol, start, end):
+    url = f"https://www.twse.com.tw/exchangeReport/STOCK_DAY?response=json&date={start.replace('-', '')}&stockNo={symbol}"
+    response = requests.get(url)
+    data = response.json()
+    if data["stat"] != "OK":
+        print(f"無法獲取台股 {symbol} 的資料")
+        return pd.DataFrame()
+
+    # 將民國年份轉換為西元年份
+    df = pd.DataFrame(data["data"], columns=data["fields"])
+    df["日期"] = df["日期"].apply(convert_taiwan_date)  # 將民國年份轉換為西元年份
+    df["日期"] = pd.to_datetime(df["日期"], format="%Y/%m/%d")
+    df.set_index("日期", inplace=True)
+    df = df[["收盤價"]].rename(columns={"收盤價": "Adj Close"})
+    df["Adj Close"] = pd.to_numeric(df["Adj Close"].str.replace(",", ""))
+
+    return df.loc[start:end]
+
+
 # 加載並預處理股票或加密貨幣資料
 def load_stock_data(symbol, start, end):
-    symbol = format_symbol(symbol)
     print(f"從 {start} 到 {end} 獲取 {symbol} 的資料")
-    if "/" in symbol:  # 檢測加密貨幣對
-        exchange = ccxt.binance(
-            {"enableRateLimit": True, "verbose": False}  # 關閉詳細日誌
-        )
+
+    # 判斷是台股、美股還是加密貨幣
+    if symbol.isdigit():
+        # 台股資料
+        data = get_taiwan_stock_data(symbol, start, end)
+    elif "/" in symbol:
+        # 加密貨幣資料
+        symbol = format_symbol(symbol)
+        exchange = ccxt.binance({"enableRateLimit": True, "verbose": False})
         since = exchange.parse8601(f"{start}T00:00:00Z")
         try:
             ohlcv = exchange.fetch_ohlcv(symbol, "1d", since)
             if not ohlcv:
                 print(f"未返回 {symbol} 的 OHLCV 資料")
                 return pd.DataFrame()
-            else:
-                print(
-                    f"獲取到 {symbol} 的 OHLCV 資料: {ohlcv[:5]}..."
-                )  # 打印前5行資料進行調試
+            data = pd.DataFrame(
+                ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"]
+            )
+            data["timestamp"] = pd.to_datetime(data["timestamp"], unit="ms")
+            data.set_index("timestamp", inplace=True)
+            data = data[["close"]]
+            data.columns = ["Adj Close"]
         except Exception as e:
             print(f"從 Binance 獲取資料時出錯: {e}")
-            return pd.DataFrame()  # 返回空資料框，表示無法獲取資料
-
-        data = pd.DataFrame(
-            ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"]
-        )
-        data["timestamp"] = pd.to_datetime(data["timestamp"], unit="ms")
-        data.set_index("timestamp", inplace=True)
-        data = data[["close"]]
-        data.columns = ["Adj Close"]
+            return pd.DataFrame()
     else:
-        # 股票資料
+        # 美股或台股 ETF 資料
         data = yf.download(symbol, start=start, end=end)
         if data.empty:
             print(f"使用 yfinance 未返回 {symbol} 的資料")
@@ -113,7 +140,7 @@ def create_lstm_model(data, time_steps=80):
 
     X_train, Y_train = [], []
     for i in range(time_steps, len(train_data)):
-        X_train.append(train_data[i - time_steps : i])  # 這裡直接保留所有特徵
+        X_train.append(train_data[i - time_steps : i])
         Y_train.append(train_data[i, 0])
 
     X_train, Y_train = np.array(X_train), np.array(Y_train)
@@ -122,10 +149,8 @@ def create_lstm_model(data, time_steps=80):
     print(f"Y_train 形狀: {Y_train.shape}")
 
     # 修正 X_train 的形狀
-    if len(X_train.shape) == 3:  # 確保形狀為 (樣本數, 時間步長, 特徵數)
-        X_train = X_train.reshape(
-            X_train.shape[0], X_train.shape[1], X_train.shape[2]
-        )  # 保留特徵數
+    if len(X_train.shape) == 3:
+        X_train = X_train.reshape(X_train.shape[0], X_train.shape[1], X_train.shape[2])
 
     print(f"重新調整後的 X_train 形狀: {X_train.shape}")
 
@@ -138,7 +163,7 @@ def create_lstm_model(data, time_steps=80):
         LSTM(
             50, return_sequences=True, input_shape=(X_train.shape[1], X_train.shape[2])
         )
-    )  # 更新這裡的 input_shape
+    )
     model.add(LSTM(50))
     model.add(Dense(1))
 
@@ -157,7 +182,7 @@ def fetch_market_news_for_symbol(symbol):
         response = requests.get(url)
         data = response.json()
 
-        print(f"API 回應資料: {data}")  # 打印API回應的完整資料
+        print(f"API 回應資料: {data}")
 
         if "articles" in data:
             articles = data["articles"]
@@ -188,13 +213,15 @@ def predict():
             return jsonify({"error": "需要提供股票代碼"}), 400
 
         end_date = datetime.today().strftime("%Y-%m-%d")
-        start_date = (datetime.today() - timedelta(days=365)).strftime("%Y-%m-%d")
+        start_date = (datetime.today() - timedelta(days=120)).strftime(
+            "%Y-%m-%d"
+        )  # 2 年前
 
         data = load_stock_data(symbol, start_date, end_date)
         if data.empty:
             return jsonify({"error": "未找到股票資料"}), 404
 
-        if len(data) < 100:
+        if len(data) < 100:  # 這邊的 100 可根據自己的需求調整
             return jsonify({"error": f"{symbol} 資料不足"}), 400
 
         model, scaler = create_lstm_model(data.values)
