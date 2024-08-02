@@ -216,7 +216,7 @@ def predict():
         end_date = datetime.today().strftime("%Y-%m-%d")
         start_date = (datetime.today() - timedelta(days=120)).strftime(
             "%Y-%m-%d"
-        )  # 2 年前
+        )  # 4個月前的日期
 
         data = load_stock_data(symbol, start_date, end_date)
         if data.empty:
